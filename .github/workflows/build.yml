@@ -28,45 +28,48 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check for uploaded ZIP
-        id: check
-        run: |
-          if ls *.zip 1> /dev/null 2>&1; then
-            echo "has_zip=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_zip=false" >> $GITHUB_OUTPUT
-            echo "Waiting for ZIP upload..."
-          fi
-
-      - name: Auto-Unzip uploaded ZIP files
-        if: steps.check.outputs.has_zip == 'true'
+      - name: Locate & Extract App Files
+        id: prep
         run: |
           mkdir -p _work _site
-          find . -maxdepth 1 -name '*.zip' -print0 | while IFS= read -r -d '' f; do
-            ts=$(git log -1 --format=%ct -- "$f" 2>/dev/null || echo 0)
-            printf "%s\t%s\n" "$ts" "$f"
-          done | sort -n | cut -f2- | while IFS= read -r z; do
-            echo "Extracting $z..."
-            unzip -qo "$z" -d _work
+          ZIPS=$(find . -not -path './.git/*' -type f -iname '*.zip')
+          if [ -n "$ZIPS" ]; then
+            echo "$ZIPS" | while IFS= read -r f; do
+              ts=$(git log -1 --format=%ct -- "$f" 2>/dev/null || echo 0)
+              printf "%s\t%s\n" "$ts" "$f"
+            done | sort -n | cut -f2- | while IFS= read -r z; do
+              echo "Extracting: $z"
+              unzip -qo "$z" -d _work
+            done
+          else
+            find . -maxdepth 1 -not -name '.' -not -name '.git' -not -name '_work' -not -name '_site' -exec cp -r {} _work/ \;
+          fi
+
+          HTML_PATH=$(find _work -maxdepth 3 -name 'index.html' -not -path '*/android/*' | head -n 1)
+          if [ -z "$HTML_PATH" ]; then
+            echo "ready=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          WEB_DIR=$(dirname "$HTML_PATH")
+          cp "$WEB_DIR/index.html" _site/
+          for f in manifest.json sw.js version.json icon.svg icon-192.png icon-512.png; do
+            [ -f "$WEB_DIR/$f" ] && cp "$WEB_DIR/$f" _site/ || true
           done
-          cp _work/index.html _site/
-          for ext in manifest.json sw.js version.json icon.svg icon-192.png icon-512.png; do
-            [ -f "_work/$ext" ] && cp "_work/$ext" _site/ || true
-          done
+          echo "ready=true" >> $GITHUB_OUTPUT
 
       - name: Setup GitHub Pages
-        if: steps.check.outputs.has_zip == 'true'
+        if: steps.prep.outputs.ready == 'true'
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
-        if: steps.check.outputs.has_zip == 'true'
+        if: steps.prep.outputs.ready == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: '_site'
 
       - name: Deploy to GitHub Pages
         id: deployment
-        if: steps.check.outputs.has_zip == 'true'
+        if: steps.prep.outputs.ready == 'true'
         uses: actions/deploy-pages@v4
 
   build-android-apk:
@@ -78,48 +81,52 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check for uploaded ZIP
-        id: check
-        run: |
-          if ls *.zip 1> /dev/null 2>&1; then
-            echo "has_zip=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_zip=false" >> $GITHUB_OUTPUT
-            echo "Waiting for ZIP upload..."
-          fi
-
-      - name: Auto-Unzip & prepare Android project
-        if: steps.check.outputs.has_zip == 'true'
+      - name: Locate & Extract Android Project
+        id: prep
         run: |
           mkdir -p _work
-          find . -maxdepth 1 -name '*.zip' -print0 | while IFS= read -r -d '' f; do
-            ts=$(git log -1 --format=%ct -- "$f" 2>/dev/null || echo 0)
-            printf "%s\t%s\n" "$ts" "$f"
-          done | sort -n | cut -f2- | while IFS= read -r z; do
-            echo "Extracting $z..."
-            unzip -qo "$z" -d _work
-          done
-          mkdir -p _work/android/app/src/main/assets
-          cp _work/index.html _work/android/app/src/main/assets/index.html
-          [ -f "_work/icon-192.png" ] && cp _work/icon-192.png _work/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png || true
-          [ -f "_work/icon-512.png" ] && cp _work/icon-512.png _work/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png || true
+          ZIPS=$(find . -not -path './.git/*' -type f -iname '*.zip')
+          if [ -n "$ZIPS" ]; then
+            echo "$ZIPS" | while IFS= read -r f; do
+              ts=$(git log -1 --format=%ct -- "$f" 2>/dev/null || echo 0)
+              printf "%s\t%s\n" "$ts" "$f"
+            done | sort -n | cut -f2- | while IFS= read -r z; do
+              echo "Extracting: $z"
+              unzip -qo "$z" -d _work
+            done
+          else
+            find . -maxdepth 1 -not -name '.' -not -name '.git' -not -name '_work' -exec cp -r {} _work/ \;
+          fi
+
+          GRADLE_FILE=$(find _work -maxdepth 4 -name 'settings.gradle' | head -n 1)
+          HTML_PATH=$(find _work -maxdepth 3 -name 'index.html' -not -path '*/android/*' | head -n 1)
+          if [ -z "$GRADLE_FILE" ] || [ -z "$HTML_PATH" ]; then
+            echo "ERROR: android/settings.gradle හමු නොවීය. කරුණාකර apex-quantum-v9-github-direct-apk.zip ෆයිල් එක Upload කරන්න."
+            exit 1
+          fi
+
+          ANDROID_DIR=$(dirname "$GRADLE_FILE")
+          WEB_DIR=$(dirname "$HTML_PATH")
+          echo "android_dir=$ANDROID_DIR" >> $GITHUB_OUTPUT
+
+          mkdir -p "$ANDROID_DIR/app/src/main/assets"
+          cp "$WEB_DIR/index.html" "$ANDROID_DIR/app/src/main/assets/index.html"
+          [ -f "$WEB_DIR/icon-192.png" ] && cp "$WEB_DIR/icon-192.png" "$ANDROID_DIR/app/src/main/res/mipmap-xhdpi/ic_launcher.png" || true
+          [ -f "$WEB_DIR/icon-512.png" ] && cp "$WEB_DIR/icon-512.png" "$ANDROID_DIR/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" || true
 
       - name: Setup JDK 17
-        if: steps.check.outputs.has_zip == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
       - name: Setup Gradle 8.7
-        if: steps.check.outputs.has_zip == 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
       - name: Compile Installable Android APK
-        if: steps.check.outputs.has_zip == 'true'
-        working-directory: _work/android
+        working-directory: ${{ steps.prep.outputs.android_dir }}
         env:
           APEX_APP_URL: "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
           APEX_VERSION_NAME: "9.0.${{ github.run_number }}"
@@ -127,11 +134,9 @@ jobs:
         run: gradle assembleDebug --no-daemon
 
       - name: Rename APK
-        if: steps.check.outputs.has_zip == 'true'
-        run: cp _work/android/app/build/outputs/apk/debug/app-debug.apk APEX-Quantum-AutoUpdate.apk
+        run: cp "${{ steps.prep.outputs.android_dir }}/app/build/outputs/apk/debug/app-debug.apk" APEX-Quantum-AutoUpdate.apk
 
       - name: Upload APK Artifact
-        if: steps.check.outputs.has_zip == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: APEX-Quantum-APK
@@ -139,11 +144,10 @@ jobs:
           retention-days: 30
 
       - name: Publish APK to GitHub Releases
-        if: steps.check.outputs.has_zip == 'true'
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v9.0.${{ github.run_number }}"
           name: "APEX Quantum v9.0.${{ github.run_number }} (Auto-Updating APK)"
-          body: "ZIP එක Unzip නොකරම GitHub හරහා ස්වයංක්‍රීයව Build වූ APEX Quantum Android APK එක."
+          body: "APEX Quantum v9 Auto-Updating Android APK"
           files: APEX-Quantum-AutoUpdate.apk
